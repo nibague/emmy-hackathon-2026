@@ -5,6 +5,7 @@ PTX goes to stdout only; anything diagnostic goes to stderr.
 """
 import sys
 import json
+import struct
 from pathlib import Path
 from emmy.compiler.graph import Graph
 
@@ -15,8 +16,72 @@ REG_TYPES = {"p": ".pred", "r": ".b32", "rd": ".b64", "f": ".f32"}
 # Integer BinaryExpr ops used in index expressions -> PTX s32 instruction.
 INT_BINOPS = {"+": "add.s32", "-": "sub.s32", "*": "mul.lo.s32"}
 
-# Elementwise Assign ops (f32) -> PTX instruction taking all args in order.
-F32_OPS = {"add": "add.f32"}
+LOG2E = 1.4426950408889634
+LN2 = 0.6931471805599453
+
+
+def f32_imm(x):
+    """A float as a PTX f32 immediate (hex bit pattern, e.g. 0f3F800000 for 1.0)."""
+    return "0f%08X" % struct.unpack("<I", struct.pack("<f", x))[0]
+
+
+# Elementwise Assign ops (f32). Each emitter gets (compiler, dst, *srcs) and emits PTX.
+def _exp(c, d, x):
+    # e^x = 2^(x * log2 e)
+    t = c.new_reg("f")
+    c.emit(f"mul.f32 {t}, {x}, {f32_imm(LOG2E)};")
+    c.emit(f"ex2.approx.f32 {d}, {t};")
+
+
+def _log(c, d, x):
+    # ln x = log2(x) * ln 2
+    t = c.new_reg("f")
+    c.emit(f"lg2.approx.f32 {t}, {x};")
+    c.emit(f"mul.f32 {d}, {t}, {f32_imm(LN2)};")
+
+
+def _sigmoid(c, d, x):
+    # 1 / (1 + e^-x)
+    n, e, s = c.new_reg("f"), c.new_reg("f"), c.new_reg("f")
+    c.emit(f"neg.f32 {n}, {x};")
+    _exp(c, e, n)
+    c.emit(f"add.f32 {s}, {e}, {f32_imm(1.0)};")
+    c.emit(f"rcp.rn.f32 {d}, {s};")
+
+
+def _silu(c, d, x):
+    s = c.new_reg("f")
+    _sigmoid(c, s, x)
+    c.emit(f"mul.f32 {d}, {x}, {s};")
+
+
+def _simple(instr):
+    """An op that is one PTX instruction taking every source in order."""
+    return lambda c, d, *xs: c.emit(f"{instr} {d}, {', '.join(xs)};")
+
+
+F32_OPS = {
+    "add": _simple("add.f32"),
+    "subtract": _simple("sub.f32"),
+    "sub": _simple("sub.f32"),
+    "multiply": _simple("mul.f32"),
+    "divide": _simple("div.rn.f32"),
+    "true_divide": _simple("div.rn.f32"),
+    "maximum": _simple("max.f32"),
+    "minimum": _simple("min.f32"),
+    "negative": _simple("neg.f32"),
+    "abs": _simple("abs.f32"),
+    "copy": _simple("mov.f32"),
+    "sqrt": _simple("sqrt.rn.f32"),
+    "rsqrt": _simple("rsqrt.approx.f32"),
+    "reciprocal": _simple("rcp.rn.f32"),
+    "relu": lambda c, d, x: c.emit(f"max.f32 {d}, {x}, {f32_imm(0.0)};"),
+    "square": lambda c, d, x: c.emit(f"mul.f32 {d}, {x}, {x};"),
+    "exp": _exp,
+    "log": _log,
+    "sigmoid": _sigmoid,
+    "silu": _silu,
+}
 
 
 def static_int(dim):
@@ -148,8 +213,8 @@ class KernelCompiler:
             raise NotImplementedError(f"elementwise op {op!r}")
         srcs = [self.regs[a] for a in assign.args]
         dst = self.new_reg("f")
+        F32_OPS[op](self, dst, *srcs)
         self.regs[assign.name] = dst
-        self.emit(f"{F32_OPS[op]} {dst}, {', '.join(srcs)};")
 
     def stmt_Write(self, write):
         dt = write.value_dtype
