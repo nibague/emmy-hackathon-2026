@@ -1,116 +1,119 @@
-# Emmy Hackathon — write a PTX compiler for Kernel IR
+# Kernel IR -> PTX compiler (Emmy Hackathon 2026)
 
-Emmy (github.com/cloudrift-ai/emmy) compiles PyTorch to CUDA C++ and builds it with `nvcc`.
-**Your task: write a compiler that takes Emmy's Kernel IR and emits PTX directly**, skipping the
-CUDA C++ step. `ptxas` turns PTX into the same GPU binary ~19× faster than the full `nvcc`
-pipeline — Emmy's autotuner compiles thousands of kernel variants, so that middle step matters.
+This repo is a small compiler, `compile.py`, that reads a GPU kernel described in Emmy's
+**Kernel IR** (a `*.ir.json` file) and prints **PTX**, NVIDIA's GPU assembly language. I built
+it for the RiftStack Emmy Hackathon 2026 as a learning project, working with Claude Code. I
+started without knowing PTX, and every step is written up in [`docs/journal/`](docs/journal/README.md)
+so it can be followed from scratch.
 
-You do **not** need a GPU. A hosted runner at `http://runner.riftstack.ai:48701` (the default in `submit.py`) compiles
-your PTX with `ptxas`, executes it on real hardware, and tells you whether the output is correct. See [docs/API.md](docs/API.md).
+## What was the hackathon for
 
-## Requirements
+[Emmy](https://github.com/cloudrift-ai/emmy) compiles PyTorch code into GPU kernels. Today it
+writes each kernel as **CUDA C++** and builds it with **`nvcc`**. `nvcc` first turns C++ into
+PTX, then runs **`ptxas`** to turn PTX into machine code. The challenge was to **skip the C++
+step and emit PTX directly**, so only `ptxas` has to run. The organizers report this is about
+19x faster than the full `nvcc` pipeline (their figure, not measured here). That matters
+because Emmy's autotuner compiles **thousands of variants** of each kernel to find the fastest
+one, so compile time adds up.
 
-- **Python 3.12 or newer.** The Kernel IR only deserializes through Emmy's own classes:
+The organizers' original task description is kept in
+[docs/HACKATHON-ORIGINAL-README.md](docs/HACKATHON-ORIGINAL-README.md). Its relative links
+(`TASK.md`, `docs/API.md`, ...) are written relative to the repo root.
 
-  ```bash
-  pip install emmy-ml==0.3.11       # no torch, no CUDA, no GPU needed
-  ```
+## Status
 
-  This alone reads every problem IR. Torch is **not** needed — it is only required to
-  *generate* new IRs from PyTorch expressions, which is optional.
+Verified on 2026-10-29 with `.venv/bin/python submit.py <problem> --compiler compile.py`
+(runner GPU: RTX 5090, `sm_120`). "max abs err" is the largest difference from the expected
+output.
 
-- Your submission is a **program**, not PTX files. It must run as:
+| problem | category | result | detail |
+|---|---|---|---|
+| p00_scalar_add | 1 pointwise | **PASS** | max abs err 0 |
+| p01_vector_add | 1 pointwise | **PASS** | max abs err 0 |
+| p02_scale_shift | 1 pointwise | **PASS** | max abs err 0 |
+| p03_relu_mul | 1 pointwise | **PASS** | max abs err 0 |
+| r01_array_sum | 2 reduction | **PASS** | max abs err 3.8e-06 (tolerance 1e-4) |
+| r02_big_sum | 2 reduction | **PASS** | max abs err 1.5e-05 (tolerance 1e-3) |
+| r03_mean | 2 reduction | **PASS** | max abs err 9.3e-10 (tolerance 1e-4) |
+| r04_row_sum | 2 reduction | **PASS** | max abs err 5.7e-06 (tolerance 1e-4) |
+| f01_rmsnorm | 4 fused | **PASS** | max abs err 1.9e-06. Uses only category-2 node kinds |
+| f03_l2norm | 4 fused | **PASS** | max abs err 1.5e-08. Uses only category-2 node kinds |
+| f02_row_softmax | 4 fused | FAIL | compiler stops: `NotImplementedError: Accum with base` |
+| m01_matmul_512 | 3 matmul | FAIL | compiler stops: `NotImplementedError: statement Init` |
+| m02_matmul_rect | 3 matmul | FAIL | compiler stops: `NotImplementedError: statement Init` |
+| a01_attention | 5 attention | FAIL | compiler stops: `NotImplementedError: statement Loop` |
+| a02_attention_128 | 5 attention | FAIL | compiler stops: `NotImplementedError: statement Loop` |
 
-  ```bash
-  python compile.py path/to/kernel.ir.json > out.ptx
-  ```
+The MVP (all of categories 1 and 2) passes. The failing problems never reach the GPU: the
+compiler exits with an error naming the first IR feature it does not support yet. See
+[docs/journal/08-next-steps.md](docs/journal/08-next-steps.md).
 
-  This contract matters: submissions are evaluated against a **hidden set** of Kernel IRs in the
-  same categories as the open problems. Hardcoding the open set scores nothing.
+## How to run
 
-## Five-minute start
+All commands are run from the repo root.
+
+**Setup** (Python 3.12 or newer; no GPU, CUDA or PyTorch needed):
 
 ```bash
-git clone https://github.com/cloudrift-ai/emmy-hackathon-2026 && cd emmy-hackathon-2026
-pip install emmy-ml==0.3.11 numpy requests   # no torch needed
-python submit.py r01_array_sum examples/k_sum_1_reduce.ptx    # see a pass
-python submit.py p00_scalar_add examples/k_sum_1_reduce.ptx   # wrong entry: a clean failure
-python submit.py p00_scalar_add --compiler compile.py         # your compiler, once you have one
+python3 -m venv .venv
+.venv/bin/pip install emmy-ml==0.3.11 numpy requests
 ```
 
-Then open `problems/p00_scalar_add/` and look at three files:
+These steps are the organizers' instructions adapted to a venv. My environment has Python
+3.12.3, emmy-ml 0.3.11, numpy 2.5.4 and requests 2.34.2. I have not re-run the setup from a
+fresh clone (TO VERIFY).
 
-| file | what it is |
-|---|---|
-| `*.ir.json` | the Kernel IR — **the input to your compiler** |
-| `*.ir.txt` | the same IR, pretty-printed for reading |
-| `*.ref.cu` | Emmy's generated CUDA C++ — the reference answer, in a different target language |
+**Compile one kernel** (PTX goes to stdout, errors go to stderr):
 
-Load an IR in Python:
-
-```python
-import json
-from emmy.compiler.graph import Graph
-g = Graph.from_dict(json.load(open("problems/r01_array_sum/k_sum_1_reduce.ir.json")))
-body = g.nodes["sum_1"].op.body     # a tree of typed statements: Tile, StridedLoop, Load, ...
+```bash
+.venv/bin/python compile.py problems/p00_scalar_add/k_add_pointwise.ir.json > out.ptx
 ```
 
-Your compiler walks that tree and prints PTX. Start with the common node kinds in the short table —
-see [TASK.md](TASK.md) for the categories and the node-by-node translation table.
+**Test one problem end to end.** `submit.py` runs the compiler, sends the PTX to the
+organizers' hosted runner (`runner.riftstack.ai`), which assembles it with `ptxas`, runs it on
+an RTX 5090, and compares the output with `expected.npz`:
 
-## The problems
+```bash
+.venv/bin/python submit.py p00_scalar_add --compiler compile.py
+```
 
-15 open problems in 5 categories, easy → hard: **pointwise → reductions → matmul → fused →
-attention-like**. Each is a folder under `problems/` with the IR, the reference, a launch
-descriptor (`meta.json` — you never guess grid/block), and expected outputs (`expected.npz`).
+**Test every MVP problem:**
 
-**MVP: your compiler passes categories 1 and 2.** See [MVP.md](MVP.md).
+```bash
+for p in p00_scalar_add p01_vector_add p02_scale_shift p03_relu_mul \
+         r01_array_sum r02_big_sum r03_mean r04_row_sum; do
+  .venv/bin/python submit.py $p --compiler compile.py
+done
+```
 
-Problems are scheduled for `sm_89`, and the runner is an **RTX 5090 (`sm_120`)**, where PTX written for `sm_89`
-runs unchanged; [problems/PROVENANCE.md](problems/PROVENANCE.md)
-says how they were generated and checked. The hidden evaluation set contains more problems of the *same kinds* —
-different shapes and ops, no surprise concepts.
+**Test a hand-written PTX file** (here, the organizers' annotated example):
 
-## Submitting
-
-Submit at [riftstack.ai/hackathon/submit](https://riftstack.ai/hackathon/submit) before
-**23:59 AoE on Tuesday, October 27**. A submission is:
-
-- a **public GitHub repository** with `compile.py` at its root, runnable as
-  `python compile.py path/to/kernel.ir.json > out.ptx`;
-- a **video of 3 to 5 minutes** in which you walk through your compiler in your own voice
-  (YouTube, Vimeo or Google Drive, shared so that anyone with the link can watch it).
-
-Teams of up to three submit once and list every member. You can submit again until the
-deadline; we review your latest entry. AI coding assistants are allowed, but your video has to
-show that you understand how your compiler works — an entry where the understanding seems to
-have been handed to an AI is not eligible for a prize.
-
-## How compilers are evaluated
-
-We run your `compile.py` on every kernel of the **hidden set** — the same five categories as the
-open problems, with different shapes and ops — then assemble the PTX with `ptxas`, run it on the
-runner's GPU under each problem's `meta.json` launch, and compare the outputs with the expected
-ones within the problem's tolerance. This is the pipeline `submit.py --compiler` runs, so passing
-the open set that way is the best preparation. Keep compiling to seconds per kernel: a time
-limit may apply.
-
-1. **Correctness on the hidden set, by category.** Passing categories 1 and 2 is the bar
-   ([MVP.md](MVP.md)); each further category is what sets submissions apart.
-2. **Code review** of your compiler is the first tiebreak. The IR → PTX lowering has to be your
-   own — see the rule in [TASK.md](TASK.md).
-3. **Speed** of the generated kernels is the last tiebreak.
-
-The video decides prize eligibility, as described above.
+```bash
+.venv/bin/python submit.py r01_array_sum examples/k_sum_1_reduce.ptx
+```
 
 ## Repo map
 
 ```
-problems/     the open set (15 problems)
-examples/     hand-written PTX with comments mapping each block back to the IR
-submit.py     one-command test: compile + run + check against expected outputs
-docs/API.md   the runner API, if you want to call it directly
-tools/        how the problems were generated (emmy compile -c ... --ir cuda)
-TASK.md       the task, the categories, the CLI contract
-MVP.md        the minimum bar
+compile.py          the compiler (the whole project lives in this one file)
+submit.py           organizers' test tool: compile + run on the remote GPU + check
+problems/           15 open problems, one folder each:
+  <name>/*.ir.json    the input: Kernel IR
+  <name>/*.ir.txt     the same IR, pretty-printed for humans
+  <name>/*.ref.cu     Emmy's own CUDA C++ for it (reference only, never used by compile.py)
+  <name>/meta.json    launch geometry (grid, block), argument order, tolerance
+  <name>/expected.npz the correct output
+examples/           organizers' hand-written, commented PTX for r01_array_sum
+docs/journal/       learning journal: concepts, walkthroughs, build log
+docs/API.md         organizers' runner API
+docs/HACKATHON-ORIGINAL-README.md   organizers' original README
+TASK.md, MVP.md     organizers' task description and minimum bar
+tools/              organizers' scripts that generated the problems
+CLAUDE.md           working rules for Claude Code in this repo
 ```
+
+## Start reading here
+
+**[docs/journal/README.md](docs/journal/README.md)** is the index of the journal, in
+a suggested reading order. It goes from "what is a GPU compiler" to line-by-line walkthroughs of
+the PTX this compiler produces.

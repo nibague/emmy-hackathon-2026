@@ -1,4 +1,4 @@
-# 01 - p00_scalar_add: first working compiler
+# 11 - Build log: p00_scalar_add, first working compiler (originally entry 01)
 
 Nodes handled: `KernelOp`, `Tile` (1 axis), `Load`, `Assign` (`add`, f32), `Write`
 (scalar / vector, non-atomic), and the expressions `Var`, `Literal`, `BinaryExpr` (+ - *).

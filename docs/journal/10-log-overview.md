@@ -1,4 +1,4 @@
-# 00 - Overview: how Kernel IR maps to PTX
+# 10 - Build log: overview, how Kernel IR maps to PTX (originally entry 00)
 
 No compiler code yet. This entry is the mental model I'll build on.
 

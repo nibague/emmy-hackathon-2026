@@ -1,4 +1,4 @@
-# 03 - Reductions (r01-r04): loops, shuffles, shared memory, barriers
+# 13 - Build log: reductions r01-r04 (originally entry 03)
 
 New nodes: `StridedLoop`, `Accum`, `WarpShuffle`, `Smem`, `Cond`, `Sync`, `TreeHalve`.
 New Tile features: several axes, the implicit `lane` / `warp` names, multi-dim indices.

@@ -1,7 +1,7 @@
-# 02 - All pointwise problems (p00-p03) + an elementwise op table
+# 12 - Build log: all pointwise problems + elementwise op table (originally entry 02)
 
 New node coverage: `Assign` with any common f32 elementwise op. Everything else (Tile, Load,
-Write, index expressions) was already in place from entry 01.
+Write, index expressions) was already in place from entry 11.
 
 ## The IR
 
