@@ -2,7 +2,7 @@
 Emmy Hackathon 2026: compile.py turns Emmy Kernel IR (*.ir.json) into PTX.
 Contract: `python compile.py kernel.ir.json > out.ptx`. PTX goes to stdout ONLY; debug output goes to stderr.
 Evaluation uses a HIDDEN set of similar kernels: never hardcode problem names or shapes. Generalize by IR node kind.
-Deadline: 23:59 AoE Oct 28 (06:59 Bogota Oct 29). Goal: MVP = categories 1 (pointwise) and 2 (reductions).
+Deadline: 23:59 AoE Oct 28, Goal: MVP = categories 1 (pointwise) and 2 (reductions).
 
 # Environment
 Repo root: /home/bbyga/GPU_mode/emmy-hackathon-2026. Always use .venv/bin/python. Never use sudo.
